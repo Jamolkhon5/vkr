@@ -10,12 +10,12 @@ from matplotlib import pyplot as plt
 
 from result_analysis import analyze_model_results, compare_models, create_summarydir, copy_best_graphs, create_comparison_graphs
 # Импорт моделей
+# В начало файла main.py, после импорта моделей
 try:
-    from model import OilFiltrationModel, MultiWellModel
-
-    print("Базовая модель успешно импортирована")
+    from model import OilFiltrationModel, MultiWellModel, MultiWell2DModel
+    print("Базовые модели успешно импортированы")
 except ImportError as e:
-    print(f"ОШИБКА: Не удалось импортировать базовую модель: {e}")
+    print(f"ОШИБКА: Не удалось импортировать базовые модели: {e}")
     sys.exit(1)
 
 # Импорт расширенной модели для карбонатов
@@ -126,25 +126,54 @@ def print_model_info(model):
         print(f"Количество нагнетательных скважин: {len(model.wells_config['injectors'])}")
         print(f"Количество добывающих скважин: {len(model.wells_config['producers'])}")
 
+        # Проверяем, является ли модель 2D-моделью
+        is_2d_model = hasattr(model, 'length_x')
+
         print("\nНагнетательные скважины:")
         for i, injector in enumerate(model.wells_config['injectors']):
-            pos = injector['position']
-            rate = injector['rate']
-            x_pos = pos * model.dx
-            print(f"  Скважина {i + 1}: позиция = {x_pos:.1f} м, дебит = {rate:.2f} м³/день")
+            if is_2d_model:
+                # Для 2D-модели используем position_x и position_y
+                pos_x = injector['position_x']
+                pos_y = injector['position_y']
+                x_pos = pos_x * model.dx
+                y_pos = pos_y * model.dy
+                print(f"  Скважина {i + 1}: позиция = ({x_pos:.1f} м, {y_pos:.1f} м), дебит = {injector['rate']:.2f} м³/день")
+            else:
+                # Для 1D-модели используем position
+                pos = injector['position']
+                x_pos = pos * model.dx
+                print(f"  Скважина {i + 1}: позиция = {x_pos:.1f} м, дебит = {injector['rate']:.2f} м³/день")
 
         print("\nДобывающие скважины:")
         for i, producer in enumerate(model.wells_config['producers']):
-            pos = producer['position']
-            rate = producer['rate']
-            x_pos = pos * model.dx
-            print(f"  Скважина {i + 1}: позиция = {x_pos:.1f} м, дебит = {rate:.2f} м³/день")
+            if is_2d_model:
+                # Для 2D-модели используем position_x и position_y
+                pos_x = producer['position_x']
+                pos_y = producer['position_y']
+                x_pos = pos_x * model.dx
+                y_pos = pos_y * model.dy
+                print(f"  Скважина {i + 1}: позиция = ({x_pos:.1f} м, {y_pos:.1f} м), дебит = {producer['rate']:.2f} м³/день")
+            else:
+                # Для 1D-модели используем position
+                pos = producer['position']
+                x_pos = pos * model.dx
+                print(f"  Скважина {i + 1}: позиция = {x_pos:.1f} м, дебит = {producer['rate']:.2f} м³/день")
 
     # Вывод параметров капиллярной модели
     print("\nПараметры капиллярной модели:")
     print(f"Давление входа: {model.entry_pressure} МПа")
     print(f"Индекс распределения пор: {model.pore_distribution_index}")
     print(f"Коэффициент смачиваемости: {model.wettability_factor}")
+
+    # Если это 2D-модель, выводим дополнительные параметры
+    if hasattr(model, 'length_x'):
+        print("\nДополнительные параметры 2D-модели:")
+        print(f"Длина пласта по X: {model.length_x} м")
+        print(f"Длина пласта по Y: {model.length_y} м")
+        print(f"Узлов сетки по X: {model.nx}")
+        print(f"Узлов сетки по Y: {model.ny}")
+        print(f"Шаг сетки по X: {model.dx} м")
+        print(f"Шаг сетки по Y: {model.dy} м")
 
 
 def run_simulation(model, model_type):
@@ -409,8 +438,12 @@ def main():
 
     # Создаем парсер аргументов командной строки
     parser = argparse.ArgumentParser(description='Моделирование фильтрации нефти с учетом капиллярных эффектов')
-    parser.add_argument('--model', choices=['basic', 'carbonate', 'multi_well', 'all'], default='all',
-                        help='Тип модели (basic - базовая, carbonate - для карбонатных коллекторов, multi_well - с несколькими скважинами, all - все модели)')
+    # В функции main() добавьте аргумент для 2D-модели:
+    parser.add_argument('--model', choices=['basic', 'carbonate', 'multi_well', 'multi_well_2d', 'all'], default='all',
+                        help='Тип модели (basic - базовая, carbonate - для карбонатных коллекторов, ' +
+                             'multi_well - с несколькими скважинами в 1D, ' +
+                             'multi_well_2d - с несколькими скважинами в 2D, ' +
+                             'all - все модели)')
     parser.add_argument('--wells', type=int, default=3,
                         help='Количество скважин (для multi_well модели, не менее 2)')
     parser.add_argument('--rock_type', type=str, default='Limestone',
@@ -430,14 +463,14 @@ def main():
 
     # Вывод информации о запуске
     print("\n" + "=" * 80)
-    print("Запуск моделирования одномерной фильтрации нефти в пористой среде")
-    print("с использованием метода апвинд")
+    print("Запуск моделирования фильтрации нефти в пористой среде")
+    print("с использованием метода апвинд (1D и 2D)")
     print("=" * 80)
 
     # Вывод параметров запуска
     print("\nПараметры запуска:")
     print(f"Тип модели: {args.model}")
-    if args.model == 'multi_well' or args.model == 'all':
+    if args.model in ['multi_well', 'multi_well_2d', 'all']:
         print(f"Количество скважин: {args.wells}")
     print(f"Тип породы: {args.rock_type}")
     print(f"Экспорт данных: {args.export}")
@@ -460,10 +493,11 @@ def main():
         os.makedirs(args.graphs_dir)
         print(f"Создана директория для графиков: {args.graphs_dir}")
 
-    # Список моделей для запуска
+    # Список моделей для запуска - ВОТ ЭТУ ЧАСТЬ НУЖНО ИЗМЕНИТЬ
     models_to_run = []
     if args.model == 'all':
-        models_to_run = ['basic', 'carbonate', 'multi_well']
+        # Включаем все модели, в том числе 2D
+        models_to_run = ['basic', 'carbonate', 'multi_well', 'multi_well_2d']
     else:
         models_to_run = [args.model]
 
@@ -481,7 +515,7 @@ def main():
                 print(f"\nСоздание модели для карбонатных коллекторов (тип породы: {args.rock_type})...")
                 model = CarbonateModel(rock_type=args.rock_type)
             elif model_type == 'multi_well':
-                print(f"\nСоздание модели с несколькими скважинами...")
+                print(f"\nСоздание модели с несколькими скважинами (1D)...")
                 # Пытаемся загрузить конфигурацию скважин из файла
                 wells_config = load_wells_config(args.data_dir, nx=1000, length=1000.0)
 
@@ -493,6 +527,12 @@ def main():
                     print("Используется конфигурация скважин из файла.")
 
                 model = MultiWellModel(length=1000.0, nx=1000, days=100, wells_config=wells_config)
+            # В функции main(), в цикле по моделям:
+            elif model_type == 'multi_well_2d':
+                print("\nСоздание 2D-модели с несколькими скважинами...")
+                # Создаем 2D-модель с более подробной сеткой и названием директории
+                model = MultiWell2DModel(length_x=1000.0, length_y=1000.0, nx=100, ny=100, days=100)
+
             else:
                 if model_type == 'carbonate' and CarbonateModel is None:
                     print("ПРЕДУПРЕЖДЕНИЕ: Модуль CarbonateModel недоступен, используется базовая модель")
@@ -508,11 +548,21 @@ def main():
         print_model_info(model)
 
         # Создаем отдельную директорию для графиков этой модели
-        model_graphs_dir = create_model_output_directory(args.graphs_dir, model_type, args.rock_type)
+        # Для 2D модели создаем отдельную директорию
+        if model_type == 'multi_well_2d':
+            dir_name = "модель_с_несколькими_скважинами_2d"
+            output_dir = os.path.join(args.graphs_dir, dir_name)
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+                print(f"Создана директория для 2D графиков: {output_dir}")
+            model_graphs_dir = output_dir
+        else:
+            model_graphs_dir = create_model_output_directory(args.graphs_dir, model_type, args.rock_type)
+
         model_dirs[model_type] = model_graphs_dir
 
         # Отображение расположения скважин для multi_well модели
-        if model_type == 'multi_well':
+        if model_type == 'multi_well' or model_type == 'multi_well_2d':
             # Модифицируем метод plot_wells_location, чтобы сохранять график в нужную директорию
             # Либо временно меняем текущую директорию
             original_savefig = plt.savefig
@@ -530,8 +580,17 @@ def main():
             # Подменяем функцию сохранения
             plt.savefig = custom_savefig
 
-            # Вызываем метод
+            # Вызываем метод plot_wells_location
             model.plot_wells_location()
+
+            # Для 2D модели дополнительно вызываем специальные методы для 2D визуализации
+            if model_type == 'multi_well_2d':
+                # Создаем визуализатор
+                visualizer = Visualizer(model, output_dir=model_graphs_dir)
+                # Вызываем методы 2D визуализации напрямую
+                visualizer.plot_wells_location_2d()
+                visualizer.plot_saturation_2d(days=[10, 30, 50, 70, 100])
+                visualizer.plot_flow_directions(day=50)
 
             # Восстанавливаем оригинальную функцию
             plt.savefig = original_savefig
@@ -562,9 +621,10 @@ def main():
             visualizer.plot_all()
 
             # Дополнительные графики для multi_well модели
-            if model_type == 'multi_well':
-                production_data = model.get_well_production_data()
-                visualizer.plot_well_production(production_data)
+            if model_type in ['multi_well', 'multi_well_2d']:
+                if hasattr(model, 'get_well_production_data'):
+                    production_data = model.get_well_production_data()
+                    visualizer.plot_well_production(production_data)
 
             print(f"Графики сохранены в директории {model_graphs_dir}")
         except Exception as e:
@@ -622,7 +682,10 @@ def main():
     # Вывод итоговой информации
     print("\nРезультаты моделирования:")
     for model_type in models_to_run:
-        model_graphs_dir = create_model_output_directory(args.graphs_dir, model_type, args.rock_type)
+        if model_type == 'multi_well_2d':
+            model_graphs_dir = os.path.join(args.graphs_dir, "модель_с_несколькими_скважинами_2d")
+        else:
+            model_graphs_dir = create_model_output_directory(args.graphs_dir, model_type, args.rock_type)
         print(f"- {model_type}: графики в директории {model_graphs_dir}")
 
     if len(models_to_compare) > 1:

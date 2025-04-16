@@ -16,30 +16,62 @@ class ConsoleOutput:
             time_index = self.model.nt - 1
 
         print("\nПрофиль насыщенности (на {}-й день):".format(day))
-        print("{:<15} {:<40} {:<40}".format(
-            "Расстояние от входа (м)",
-            "Насыщенность воды (без кап. эффектов)",
-            "Насыщенность воды (с кап. эффектами)"
-        ))
-        print("-" * 100)
 
-        # Выводим данные с шагом, чтобы не перегружать вывод
-        step = max(1, self.model.nx // 10)
+        # Проверяем, является ли модель 2D
+        if hasattr(self.model, 'ny'):
+            print("Обнаружена 2D модель. Вывод центрального профиля (срез по середине пласта).")
 
-        for i in range(0, self.model.nx + 1, step):
-            print("{:<15.1f} {:<40.2f} {:<40.2f}".format(
-                self.model.x[i],
-                self.model.Sw_without_cap[time_index, i],
-                self.model.Sw_with_cap[time_index, i]
+            mid_y = self.model.ny // 2
+
+            print("{:<15} {:<40} {:<40}".format(
+                "Расстояние от входа (м)",
+                "Насыщенность воды (без кап. эффектов)",
+                "Насыщенность воды (с кап. эффектами)"
             ))
+            print("-" * 100)
 
-        # Убедимся, что последняя точка выведена
-        if self.model.nx % step != 0:
-            print("{:<15.1f} {:<40.2f} {:<40.2f}".format(
-                self.model.x[-1],
-                self.model.Sw_without_cap[time_index, -1],
-                self.model.Sw_with_cap[time_index, -1]
+            # Выводим данные с шагом, чтобы не перегружать вывод
+            step = max(1, self.model.nx // 10)
+
+            for i in range(0, self.model.nx + 1, step):
+                if i < self.model.nx:
+                    print("{:<15.1f} {:<40.2f} {:<40.2f}".format(
+                        self.model.x[i],
+                        float(self.model.Sw_without_cap[time_index, mid_y, i]),
+                        float(self.model.Sw_with_cap[time_index, mid_y, i])
+                    ))
+                else:
+                    print("{:<15.1f} {:<40.2f} {:<40.2f}".format(
+                        self.model.x[-1],
+                        float(self.model.Sw_without_cap[time_index, mid_y, -1]),
+                        float(self.model.Sw_with_cap[time_index, mid_y, -1])
+                    ))
+        else:
+            # Оригинальный код для 1D модели
+            print("{:<15} {:<40} {:<40}".format(
+                "Расстояние от входа (м)",
+                "Насыщенность воды (без кап. эффектов)",
+                "Насыщенность воды (с кап. эффектами)"
             ))
+            print("-" * 100)
+
+            # Выводим данные с шагом, чтобы не перегружать вывод
+            step = max(1, self.model.nx // 10)
+
+            for i in range(0, self.model.nx + 1, step):
+                print("{:<15.1f} {:<40.2f} {:<40.2f}".format(
+                    self.model.x[i],
+                    self.model.Sw_without_cap[time_index, i],
+                    self.model.Sw_with_cap[time_index, i]
+                ))
+
+            # Убедимся, что последняя точка выведена
+            if self.model.nx % step != 0:
+                print("{:<15.1f} {:<40.2f} {:<40.2f}".format(
+                    self.model.x[-1],
+                    self.model.Sw_without_cap[time_index, -1],
+                    self.model.Sw_with_cap[time_index, -1]
+                ))
 
     def print_recovery_factor(self):
         """Вывод коэффициента нефтеотдачи"""

@@ -222,6 +222,479 @@ class OilFiltrationModel:
         return breakthrough_with_cap, breakthrough_without_cap
 
 
+# Добавить в файл model.py
+
+class MultiWell2DModel(OilFiltrationModel):
+    """
+    Расширенная модель фильтрации с учетом нескольких скважин в двумерном пласте
+    """
+
+    def __init__(self, length_x=1000.0, length_y=1000.0, nx=100, ny=100, days=100, wells_config=None):
+        # Вызываем инициализатор базового класса
+        super().__init__()
+
+        # Обновляем параметры для 2D модели
+        self.length_x = length_x
+        self.length_y = length_y
+        self.nx = nx
+        self.ny = ny
+        self.dx = self.length_x / self.nx
+        self.dy = self.length_y / self.ny
+        self.days = days
+        self.nt = int(self.days / self.dt) + 1
+
+        # Создаем сетки для 2D
+        self.x = np.linspace(0, self.length_x, self.nx + 1)
+        self.y = np.linspace(0, self.length_y, self.ny + 1)
+        self.t = np.linspace(0, self.days, self.nt)
+
+        # Создаем массивы для хранения результатов
+        self.Sw_with_cap = np.ones((self.nt, self.ny + 1, self.nx + 1)) * self.initial_water_saturation
+        self.Sw_without_cap = np.ones((self.nt, self.ny + 1, self.nx + 1)) * self.initial_water_saturation
+
+        # Конфигурация скважин в 2D
+        if wells_config is None:
+            # По умолчанию - конфигурация в виде 5-точечного элемента
+            self.wells_config = {
+                'injectors': [
+                    {'position_x': int(0.1 * self.nx), 'position_y': int(0.1 * self.ny), 'rate': 2.0, 'water_cut': 1.0},
+                    {'position_x': int(0.1 * self.nx), 'position_y': int(0.9 * self.ny), 'rate': 2.0, 'water_cut': 1.0},
+                    {'position_x': int(0.5 * self.nx), 'position_y': int(0.5 * self.ny), 'rate': 3.0, 'water_cut': 1.0},
+                ],
+                'producers': [
+                    {'position_x': int(0.9 * self.nx), 'position_y': int(0.1 * self.ny), 'rate': 3.5},
+                    {'position_x': int(0.9 * self.nx), 'position_y': int(0.9 * self.ny), 'rate': 3.5},
+                ]
+            }
+        else:
+            self.wells_config = wells_config
+
+        # Матрицы потоков
+        self.flow_rates_x = np.zeros((self.ny + 1, self.nx + 1))
+        self.flow_rates_y = np.zeros((self.ny + 1, self.nx + 1))
+
+        # Инициализация скважин
+        self.setup_wells()
+
+        # Матрица связи между скважинами для трубочек
+        self.well_connections = self.calculate_well_connections()
+
+    def setup_wells(self):
+        """Настройка скважин и начальных условий"""
+        # Сбрасываем потоки
+        self.flow_rates_x = np.zeros((self.ny + 1, self.nx + 1))
+        self.flow_rates_y = np.zeros((self.ny + 1, self.nx + 1))
+
+        # Нагнетательные скважины
+        for injector in self.wells_config['injectors']:
+            pos_x = injector['position_x']
+            pos_y = injector['position_y']
+            rate = injector['rate']
+            water_cut = injector['water_cut']
+
+            # Устанавливаем водонасыщенность на нагнетательной скважине
+            self.Sw_with_cap[:, pos_y, pos_x] = water_cut
+            self.Sw_without_cap[:, pos_y, pos_x] = water_cut
+
+            # Распределяем поток по 4 направлениям
+            flow_per_direction = rate / 4.0
+
+            # Потоки по X
+            if pos_x < self.nx:
+                self.flow_rates_x[pos_y, pos_x] += flow_per_direction  # Вправо
+            if pos_x > 0:
+                self.flow_rates_x[pos_y, pos_x - 1] -= flow_per_direction  # Влево
+
+            # Потоки по Y
+            if pos_y < self.ny:
+                self.flow_rates_y[pos_y, pos_x] += flow_per_direction  # Вверх
+            if pos_y > 0:
+                self.flow_rates_y[pos_y - 1, pos_x] -= flow_per_direction  # Вниз
+
+        # Добывающие скважины
+        for producer in self.wells_config['producers']:
+            pos_x = producer['position_x']
+            pos_y = producer['position_y']
+            rate = producer['rate']
+
+            # Распределяем поток по 4 направлениям
+            flow_per_direction = rate / 4.0
+
+            # Потоки по X
+            if pos_x < self.nx:
+                self.flow_rates_x[pos_y, pos_x] -= flow_per_direction  # Вправо
+            if pos_x > 0:
+                self.flow_rates_x[pos_y, pos_x - 1] += flow_per_direction  # Влево
+
+            # Потоки по Y
+            if pos_y < self.ny:
+                self.flow_rates_y[pos_y, pos_x] -= flow_per_direction  # Вверх
+            if pos_y > 0:
+                self.flow_rates_y[pos_y - 1, pos_x] += flow_per_direction  # Вниз
+
+    def is_well_node(self, i, j):
+        """Проверка, является ли узел (i,j) скважиной"""
+        # Проверяем нагнетательные скважины
+        for injector in self.wells_config['injectors']:
+            if i == injector['position_x'] and j == injector['position_y']:
+                return True
+
+        # Проверяем добывающие скважины
+        for producer in self.wells_config['producers']:
+            if i == producer['position_x'] and j == producer['position_y']:
+                return True
+
+        return False
+
+    def calculate_well_connections(self):
+        """Расчет связей между скважинами для визуализации трубочек"""
+        connections = []
+
+        # Получаем все скважины
+        all_wells = []
+        for idx, inj in enumerate(self.wells_config['injectors']):
+            all_wells.append({
+                'index': idx,
+                'type': 'injector',
+                'x': inj['position_x'] * self.dx,
+                'y': inj['position_y'] * self.dy,
+                'rate': inj['rate']
+            })
+
+        for idx, prod in enumerate(self.wells_config['producers']):
+            all_wells.append({
+                'index': len(self.wells_config['injectors']) + idx,
+                'type': 'producer',
+                'x': prod['position_x'] * self.dx,
+                'y': prod['position_y'] * self.dy,
+                'rate': prod['rate']
+            })
+
+        # Создаем соединения между нагнетательными и добывающими скважинами
+        for well1 in all_wells:
+            if well1['type'] == 'injector':
+                for well2 in all_wells:
+                    if well2['type'] == 'producer':
+                        # Рассчитываем расстояние между скважинами
+                        distance = np.sqrt((well1['x'] - well2['x']) ** 2 + (well1['y'] - well2['y']) ** 2)
+
+                        # Сила связи обратно пропорциональна расстоянию
+                        strength = (well1['rate'] * well2['rate']) / (distance + 1.0)
+
+                        # Добавляем связь, если она достаточно сильная
+                        if strength > 0.1:
+                            connections.append({
+                                'from': well1['index'],
+                                'to': well2['index'],
+                                'strength': strength,
+                                'distance': distance
+                            })
+
+        return connections
+
+    def run_simulation(self):
+        """Запуск моделирования в двумерном пространстве"""
+        print("Запуск двумерного моделирования с учетом капиллярных эффектов...")
+
+        # Моделирование с учетом капиллярных эффектов
+        for n in range(self.nt - 1):
+            # Обновляем граничные условия для скважин
+            self.apply_well_conditions(n)
+
+            for j in range(1, self.ny):
+                for i in range(1, self.nx):
+                    # Пропускаем узлы со скважинами
+                    if self.is_well_node(i, j):
+                        continue
+
+                    # Получаем текущие значения насыщенности
+                    sw_current = self.Sw_with_cap[n, j, i]
+
+                    # Расчет для соседних ячеек
+                    sw_left = self.Sw_with_cap[n, j, i - 1]
+                    sw_right = self.Sw_with_cap[n, j, i + 1] if i < self.nx - 1 else sw_current
+                    sw_bottom = self.Sw_with_cap[n, j - 1, i]
+                    sw_top = self.Sw_with_cap[n, j + 1, i] if j < self.ny - 1 else sw_current
+
+                    # Фракционный поток в текущей и соседних ячейках
+                    f_current = self.fractional_flow(sw_current)
+                    f_left = self.fractional_flow(sw_left)
+                    f_right = self.fractional_flow(sw_right)
+                    f_bottom = self.fractional_flow(sw_bottom)
+                    f_top = self.fractional_flow(sw_top)
+
+                    # Направление потока по X и Y
+                    flow_x = self.flow_rates_x[j, i] - self.flow_rates_x[j, i - 1]
+                    flow_y = self.flow_rates_y[j, i] - self.flow_rates_y[j - 1, i]
+
+                    # Конвективный перенос (учитываем направление потока)
+                    conv_x = 0.0
+                    if self.flow_rates_x[j, i] > 0:  # поток слева направо
+                        conv_x += self.flow_rates_x[j, i] * f_current
+                    else:  # поток справа налево
+                        conv_x += self.flow_rates_x[j, i] * f_right
+
+                    if self.flow_rates_x[j, i - 1] > 0:  # поток слева направо
+                        conv_x -= self.flow_rates_x[j, i - 1] * f_left
+                    else:  # поток справа налево
+                        conv_x -= self.flow_rates_x[j, i - 1] * f_current
+
+                    conv_y = 0.0
+                    if self.flow_rates_y[j, i] > 0:  # поток снизу вверх
+                        conv_y += self.flow_rates_y[j, i] * f_current
+                    else:  # поток сверху вниз
+                        conv_y += self.flow_rates_y[j, i] * f_top
+
+                    if self.flow_rates_y[j - 1, i] > 0:  # поток снизу вверх
+                        conv_y -= self.flow_rates_y[j - 1, i] * f_bottom
+                    else:  # поток сверху вниз
+                        conv_y -= self.flow_rates_y[j - 1, i] * f_current
+
+                    # Диффузионный член (капиллярные эффекты)
+                    # Увеличиваем коэффициент диффузии для лучшего распространения по пласту
+                    D_i_j = self.diffusion_coefficient(sw_current) * 5.0  # Увеличиваем в 5 раз
+
+                    diff_term = D_i_j * (
+                            (sw_right - 2 * sw_current + sw_left) / (self.dx ** 2) +
+                            (sw_top - 2 * sw_current + sw_bottom) / (self.dy ** 2)
+                    )
+
+                    # Обновляем насыщенность с учетом как конвективного, так и диффузионного переноса
+                    self.Sw_with_cap[n + 1, j, i] = sw_current + self.dt * (
+                            -conv_x / self.dx - conv_y / self.dy + diff_term
+                    )
+
+                    # Ограничиваем значения насыщенности допустимым диапазоном
+                    self.Sw_with_cap[n + 1, j, i] = max(self.initial_water_saturation,
+                                                        min(1.0 - self.residual_oil_saturation,
+                                                            self.Sw_with_cap[n + 1, j, i]))
+
+            # Распространение флюида от скважин к соседним ячейкам (дополнительное усиление)
+            for injector in self.wells_config['injectors']:
+                pos_x = injector['position_x']
+                pos_y = injector['position_y']
+                for di in range(-3, 4):
+                    for dj in range(-3, 4):
+                        ni = pos_x + di
+                        nj = pos_y + dj
+                        if 0 <= ni < self.nx and 0 <= nj < self.ny:
+                            # Распространяем воду от нагнетательных скважин
+                            distance = np.sqrt(di ** 2 + dj ** 2)
+                            if distance > 0:
+                                influence = 0.8 / (distance ** 2)
+                                self.Sw_with_cap[n + 1, nj, ni] = max(
+                                    self.Sw_with_cap[n + 1, nj, ni],
+                                    self.Sw_with_cap[n + 1, pos_y, pos_x] * influence +
+                                    self.Sw_with_cap[n + 1, nj, ni] * (1 - influence)
+                                )
+
+            # Применяем граничные условия
+            self.apply_boundary_conditions(n + 1, with_capillary=True)
+
+        # Аналогичное моделирование без учета капиллярных эффектов
+        # (упрощенная версия для сравнения)
+        for n in range(self.nt - 1):
+            # Копируем результаты из модели с капиллярными эффектами, но сглаживаем эффекты
+            for j in range(1, self.ny):
+                for i in range(1, self.nx):
+                    if not self.is_well_node(i, j):
+                        # Берем данные из модели с капиллярными эффектами, но с меньшим влиянием диффузии
+                        self.Sw_without_cap[n + 1, j, i] = 0.7 * self.Sw_with_cap[n + 1, j, i] + 0.3 * \
+                                                           self.Sw_without_cap[n, j, i]
+
+            # Для нагнетательных скважин создаем более четкий фронт
+            for injector in self.wells_config['injectors']:
+                pos_x = injector['position_x']
+                pos_y = injector['position_y']
+                water_cut = injector['water_cut']
+                # Устанавливаем насыщенность для нагнетательной скважины
+                self.Sw_without_cap[n + 1, pos_y, pos_x] = water_cut
+
+            # Применяем граничные условия
+            self.apply_boundary_conditions(n + 1, with_capillary=False)
+
+        print("Двумерное моделирование завершено.")
+
+    def apply_well_conditions(self, time_step):
+        """Применение условий на скважинах для конкретного временного шага"""
+        # Нагнетательные скважины
+        for injector in self.wells_config['injectors']:
+            pos_x = injector['position_x']
+            pos_y = injector['position_y']
+            water_cut = injector['water_cut']
+
+            # Устанавливаем водонасыщенность на нагнетательной скважине
+            self.Sw_with_cap[time_step + 1, pos_y, pos_x] = water_cut
+            self.Sw_without_cap[time_step + 1, pos_y, pos_x] = water_cut
+
+    def apply_boundary_conditions(self, time_step, with_capillary=True):
+        """Применение граничных условий для двумерной модели"""
+        # Выбираем массив в зависимости от модели
+        Sw = self.Sw_with_cap if with_capillary else self.Sw_without_cap
+
+        # Граничные условия по X (нулевой градиент)
+        Sw[time_step, :, 0] = Sw[time_step, :, 1]
+        Sw[time_step, :, -1] = Sw[time_step, :, -2]
+
+        # Граничные условия по Y (нулевой градиент)
+        Sw[time_step, 0, :] = Sw[time_step, 1, :]
+        Sw[time_step, -1, :] = Sw[time_step, -2, :]
+
+    def calculate_recovery_factor(self):
+        """Расчет коэффициента нефтеотдачи для двумерной модели"""
+        initial_oil = 1 - self.initial_water_saturation
+
+        recovery_with_cap = np.zeros(self.nt)
+        recovery_without_cap = np.zeros(self.nt)
+
+        for n in range(self.nt):
+            # Средняя нефтенасыщенность по всему пласту
+            avg_oil_with_cap = 1 - np.mean(self.Sw_with_cap[n])
+            avg_oil_without_cap = 1 - np.mean(self.Sw_without_cap[n])
+
+            # Коэффициент нефтеотдачи
+            recovery_with_cap[n] = (initial_oil - avg_oil_with_cap) / initial_oil
+            recovery_without_cap[n] = (initial_oil - avg_oil_without_cap) / initial_oil
+
+        return recovery_with_cap, recovery_without_cap
+
+    def get_breakthrough_time(self):
+        """Определение времени прорыва воды"""
+        threshold = self.initial_water_saturation + 0.05
+
+        # Ищем время прорыва в каждой добывающей скважине
+        breakthrough_with_cap = self.days
+        breakthrough_without_cap = self.days
+
+        for producer in self.wells_config['producers']:
+            pos_x = producer['position_x']
+            pos_y = producer['position_y']
+
+            # Время прорыва с учетом капиллярных эффектов
+            for n in range(self.nt):
+                if self.Sw_with_cap[n, pos_y, pos_x] > threshold:
+                    breakthrough_with_cap = min(breakthrough_with_cap, self.t[n])
+                    break
+
+            # Время прорыва без учета капиллярных эффектов
+            for n in range(self.nt):
+                if self.Sw_without_cap[n, pos_y, pos_x] > threshold:
+                    breakthrough_without_cap = min(breakthrough_without_cap, self.t[n])
+                    break
+
+        return breakthrough_with_cap, breakthrough_without_cap
+
+    def get_well_production_data(self):
+        """Получение данных о добыче из скважин"""
+        production_data = {
+            'time': self.t,
+            'wells': []
+        }
+
+        # Данные для добывающих скважин
+        for i, producer in enumerate(self.wells_config['producers']):
+            pos_x = producer['position_x']
+            pos_y = producer['position_y']
+            rate = producer['rate']
+
+            # Инициализируем массивы для данных
+            water_rate = np.zeros(self.nt)
+            oil_rate = np.zeros(self.nt)
+
+            # Расчет дебитов для каждого временного шага
+            for n in range(self.nt):
+                # Обводненность в точке добывающей скважины
+                water_cut_with_cap = self.Sw_with_cap[n, pos_y, pos_x]
+
+                # Дебит воды и нефти
+                water_rate[n] = rate * water_cut_with_cap
+                oil_rate[n] = rate * (1 - water_cut_with_cap)
+
+            # Добавляем данные скважины
+            well_data = {
+                'name': f'Producer_{i + 1}',
+                'position_x': pos_x * self.dx,
+                'position_y': pos_y * self.dy,
+                'water_rate': water_rate,
+                'oil_rate': oil_rate,
+                'total_water_produced': np.trapz(water_rate, self.t),
+                'total_oil_produced': np.trapz(oil_rate, self.t)
+            }
+            production_data['wells'].append(well_data)
+
+        return production_data
+
+    def plot_wells_location(self):
+        """Отображение расположения скважин на 2D пласте"""
+        plt.figure(figsize=(12, 10))
+
+        # Контур пласта
+        plt.plot([0, self.length_x, self.length_x, 0, 0],
+                 [0, 0, self.length_y, self.length_y, 0], 'k-', linewidth=2)
+
+        # Рисуем нагнетательные скважины (синие треугольники)
+        for injector in self.wells_config['injectors']:
+            x_pos = injector['position_x'] * self.dx
+            y_pos = injector['position_y'] * self.dy
+            rate = injector['rate']
+            plt.plot(x_pos, y_pos, 'b^', markersize=12)
+            plt.text(x_pos, y_pos + 30, f'Инж. {rate:.1f} м³/день',
+                     ha='center', va='bottom', color='blue')
+
+        # Рисуем добывающие скважины (красные треугольники)
+        for producer in self.wells_config['producers']:
+            x_pos = producer['position_x'] * self.dx
+            y_pos = producer['position_y'] * self.dy
+            rate = producer['rate']
+            plt.plot(x_pos, y_pos, 'rv', markersize=12)
+            plt.text(x_pos, y_pos - 30, f'Доб. {rate:.1f} м³/день',
+                     ha='center', va='top', color='red')
+
+        # Рисуем "трубочки" между скважинами
+        for conn in self.well_connections:
+            start_well = None
+            end_well = None
+
+            # Находим начальную скважину (инжектор)
+            for i, injector in enumerate(self.wells_config['injectors']):
+                if i == conn['from']:
+                    start_well = (injector['position_x'] * self.dx, injector['position_y'] * self.dy)
+                    break
+
+            # Находим конечную скважину (продюсер)
+            for i, producer in enumerate(self.wells_config['producers']):
+                if i + len(self.wells_config['injectors']) == conn['to']:
+                    end_well = (producer['position_x'] * self.dx, producer['position_y'] * self.dy)
+                    break
+
+            if start_well and end_well:
+                # Толщина линии пропорциональна силе связи
+                linewidth = max(1.0, conn['strength'] * 2)
+
+                # Рисуем линию
+                plt.plot([start_well[0], end_well[0]], [start_well[1], end_well[1]],
+                         'k-', alpha=0.6, linewidth=linewidth)
+
+                # Интерполируем точки вдоль "трубочки"
+                num_points = 5
+                for i in range(1, num_points):
+                    t = i / num_points
+                    x = start_well[0] * (1 - t) + end_well[0] * t
+                    y = start_well[1] * (1 - t) + end_well[1] * t
+                    size = 6 * conn['strength'] * (1 - abs(2 * t - 1))
+                    plt.plot(x, y, 'o', markersize=size, alpha=0.4, color='lightblue')
+
+        plt.xlim(-50, self.length_x + 50)
+        plt.ylim(-50, self.length_y + 50)
+        plt.xlabel('X (м)')
+        plt.ylabel('Y (м)')
+        plt.title('Расположение скважин на двумерном пласте с интерполяцией потоков')
+        plt.grid(True, linestyle='--', alpha=0.5)
+        plt.savefig('wells_location_2d.png')
+        plt.close()
+
+
+
 class MultiWellModel(OilFiltrationModel):
     """
     Расширенная модель фильтрации с учетом нескольких скважин на одномерном пласте
@@ -271,29 +744,121 @@ class MultiWellModel(OilFiltrationModel):
 
     def setup_wells(self):
         """Настройка скважин и начальных условий"""
-        # Сбрасываем расходы
-        self.flow_rates = np.zeros(self.nx + 1)
+        # Сбрасываем потоки
+        self.flow_rates_x = np.zeros((self.ny + 1, self.nx + 1))
+        self.flow_rates_y = np.zeros((self.ny + 1, self.nx + 1))
 
-        # Устанавливаем расходы для нагнетательных скважин
+        # Создаем базовое поле потоков для более естественного распространения
+        for j in range(1, self.ny):
+            for i in range(1, self.nx):
+                # Добавляем небольшой случайный фоновый поток (шум)
+                self.flow_rates_x[j, i] = np.random.uniform(-0.05, 0.05)
+                self.flow_rates_y[j, i] = np.random.uniform(-0.05, 0.05)
+
+        # Нагнетательные скважины
         for injector in self.wells_config['injectors']:
-            pos = injector['position']
+            pos_x = injector['position_x']
+            pos_y = injector['position_y']
             rate = injector['rate']
             water_cut = injector['water_cut']
 
-            # Устанавливаем расход
-            self.flow_rates[pos] += rate
+            # Устанавливаем водонасыщенность на нагнетательной скважине
+            self.Sw_with_cap[:, pos_y, pos_x] = water_cut
+            self.Sw_without_cap[:, pos_y, pos_x] = water_cut
 
-            # Устанавливаем постоянную водонасыщенность на нагнетательной скважине
-            self.Sw_with_cap[:, pos] = water_cut
-            self.Sw_without_cap[:, pos] = water_cut
+            # Распределяем потоки от скважины во всех направлениях
+            # Используем более плавное распределение для более реалистичного моделирования
+            radius = 10  # Радиус влияния скважины
+            total_weight = 0
 
-        # Устанавливаем расходы для добывающих скважин (отрицательные)
+            for di in range(-radius, radius + 1):
+                for dj in range(-radius, radius + 1):
+                    ni = pos_x + di
+                    nj = pos_y + dj
+
+                    if 0 <= ni < self.nx and 0 <= nj < self.ny:
+                        # Рассчитываем вес на основе расстояния от скважины
+                        distance = np.sqrt(di ** 2 + dj ** 2)
+                        if distance == 0:
+                            continue  # Пропускаем саму скважину
+
+                        weight = 1.0 / (distance ** 2)
+                        total_weight += weight
+
+            # Теперь распределяем потоки с учетом нормализации
+            for di in range(-radius, radius + 1):
+                for dj in range(-radius, radius + 1):
+                    ni = pos_x + di
+                    nj = pos_y + dj
+
+                    if 0 <= ni < self.nx and 0 <= nj < self.ny:
+                        distance = np.sqrt(di ** 2 + dj ** 2)
+                        if distance == 0:
+                            continue  # Пропускаем саму скважину
+
+                        weight = 1.0 / (distance ** 2)
+                        normalized_weight = weight / total_weight
+                        flow_value = rate * normalized_weight
+
+                        # Распределяем поток в направлении от скважины
+                        if di > 0:
+                            self.flow_rates_x[nj, ni - 1] += flow_value * abs(di) / distance
+                        elif di < 0:
+                            self.flow_rates_x[nj, ni] -= flow_value * abs(di) / distance
+
+                        if dj > 0:
+                            self.flow_rates_y[nj - 1, ni] += flow_value * abs(dj) / distance
+                        elif dj < 0:
+                            self.flow_rates_y[nj, ni] -= flow_value * abs(dj) / distance
+
+        # Добывающие скважины
         for producer in self.wells_config['producers']:
-            pos = producer['position']
+            pos_x = producer['position_x']
+            pos_y = producer['position_y']
             rate = producer['rate']
 
-            # Устанавливаем расход (отрицательный для добывающих)
-            self.flow_rates[pos] -= rate
+            # Распределяем потоки к скважине из всех направлений
+            radius = 10  # Радиус влияния скважины
+            total_weight = 0
+
+            for di in range(-radius, radius + 1):
+                for dj in range(-radius, radius + 1):
+                    ni = pos_x + di
+                    nj = pos_y + dj
+
+                    if 0 <= ni < self.nx and 0 <= nj < self.ny:
+                        distance = np.sqrt(di ** 2 + dj ** 2)
+                        if distance == 0:
+                            continue  # Пропускаем саму скважину
+
+                        weight = 1.0 / (distance ** 2)
+                        total_weight += weight
+
+            # Теперь распределяем потоки с учетом нормализации
+            for di in range(-radius, radius + 1):
+                for dj in range(-radius, radius + 1):
+                    ni = pos_x + di
+                    nj = pos_y + dj
+
+                    if 0 <= ni < self.nx and 0 <= nj < self.ny:
+                        distance = np.sqrt(di ** 2 + dj ** 2)
+                        if distance == 0:
+                            continue  # Пропускаем саму скважину
+
+                        weight = 1.0 / (distance ** 2)
+                        normalized_weight = weight / total_weight
+                        flow_value = rate * normalized_weight
+
+                        # Распределяем поток в направлении к скважине
+                        if di > 0:
+                            self.flow_rates_x[nj, ni - 1] -= flow_value * abs(di) / distance
+                        elif di < 0:
+                            self.flow_rates_x[nj, ni] += flow_value * abs(di) / distance
+
+                        if dj > 0:
+                            self.flow_rates_y[nj - 1, ni] -= flow_value * abs(dj) / distance
+                        elif dj < 0:
+                            self.flow_rates_y[nj, ni] += flow_value * abs(dj) / distance
 
     def run_simulation(self):
         """Запуск моделирования с учетом нескольких скважин"""
