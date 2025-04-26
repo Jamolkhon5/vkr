@@ -459,6 +459,9 @@ def main():
     parser.add_argument('--debug', action='store_true',
                         help='Режим отладки с дополнительной информацией')
 
+    parser.add_argument('--science', action='store_true',
+                        help='Создание научных визуализаций и таблиц')
+
     args = parser.parse_args()
 
     # Вывод информации о запуске
@@ -492,6 +495,48 @@ def main():
     if not os.path.exists(args.graphs_dir):
         os.makedirs(args.graphs_dir)
         print(f"Создана директория для графиков: {args.graphs_dir}")
+
+    if args.science:
+        print("\n" + "=" * 80)
+        print("Создание научных визуализаций для документации")
+        print("=" * 80)
+
+        try:
+            # Импортируем модуль научных визуализаций
+            from scientific_visualization import ScientificVisualizer
+
+            # Создаем экземпляры моделей для визуализации
+            basic_model = OilFiltrationModel()
+
+            # Создаем карбонатную модель, если доступна
+            carbonate_model = None
+            if CarbonateModel is not None:
+                carbonate_model = CarbonateModel(rock_type=args.rock_type)
+                print(f"Используется карбонатная модель типа {args.rock_type} для визуализаций")
+
+            # Создаем визуализатор и каталог для результатов
+            science_dir = os.path.join(args.graphs_dir, "scientific")
+            if not os.path.exists(science_dir):
+                os.makedirs(science_dir)
+
+            sci_viz = ScientificVisualizer(
+                output_dir=science_dir,
+                basic_model=basic_model,
+                carbonate_model=carbonate_model
+            )
+
+            # Создаем все визуализации
+            visualizations = sci_viz.create_all_visualizations()
+
+            print("\nНаучные визуализации созданы успешно и сохранены в директории:")
+            print(science_dir)
+            print("\nСписок созданных файлов:")
+            for name, path in visualizations.items():
+                print(f"- {name}: {os.path.basename(path)}")
+
+        except Exception as e:
+            print(f"ОШИБКА при создании научных визуализаций: {e}")
+            traceback.print_exc()
 
     # Список моделей для запуска - ВОТ ЭТУ ЧАСТЬ НУЖНО ИЗМЕНИТЬ
     models_to_run = []
